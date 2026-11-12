@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>水ハネ回避マップ 統合版</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root { --prm: #1769d2; --bg: #f4f8fc; --card: #fff; --text: #1f2933; --sub: #65717b; --border: #cbd3da; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; color: var(--text); background: var(--bg); overflow: hidden; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; }
+  
+  /* フローティングパネル */
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 1000;
+    width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 24px);
+    background: var(--card); border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .panel-header { padding: 12px 16px; background: var(--prm); color: white; font-weight: bold; font-size: 16px; display: flex; justify-content: space-between; align-items: center;}
+  .panel-content { padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+  
+  /* タブ・ボタン */
+  .tabs { display: flex; gap: 8px; }
+  .tabs button {
+    flex: 1; padding: 8px 4px; font-size: 13px; border: 1px solid var(--border);
+    background: #f6f8fa; border-radius: 8px; cursor: pointer; transition: 0.2s; color: var(--text);
+  }
+  .tabs button.active { background: var(--prm); color: white; border-color: var(--prm); }
+  
+  .btn {
+    padding: 8px 12px; font-size: 13px; border: 1px solid var(--border);
+    background: #f6f8fa; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn:hover { background: #eaf1f7; }
+  .btn.primary { background: var(--prm); color: white; border-color: var(--prm); font-weight: bold; padding: 12px; font-size: 15px; width: 100%; }
+  .btn.primary:hover { background: #1254a8; }
+  .btn.active-toggle { background: #4caf50; color: white; border-color: #4caf50; }
+  
+  /* セクションカード */
+  .section { background: #f9fbfd; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .section-title { font-size: 12px; color: var(--sub); font-weight: bold; margin-bottom: 8px; text-transform: uppercase; }
+  
+  /* 気象・風情報 */
+  .weather-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .weather-row input { width: 60px; padding: 4px; border: 1px solid var(--border); border-radius: 4px; text-align: right; }
+  
+  #compass-svg { width: 50px; height: 50px; flex-shrink: 0; }
+  .wind-info { flex: 1; font-size: 13px; line-height: 1.4; }
+  .wind-info b { font-size: 15px; color: var(--prm); }
+  
+  /* ステータス・結果 */
+  #status { font-size: 13px; padding: 10px; background: #e3f0fb; border-radius: 8px; color: #0d47a1; line-height: 1.5; }
+  .result-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+  .result-row:last-child { border-bottom: none; }
+  .color-box { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div class="panel-header">
+    <span>💧 水ハネ回避マップ</span>
+  </div>
+  <div class="panel-content">
+    
+    <!-- 場所検索 -->
+    <div>
+      <div class="section-title">0. 場所を検索して出発地に設定</div>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="search-query" placeholder="例: 金沢駅" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:8px; font-family:inherit; font-size:13px;">
+        <button class="btn primary" id="btn-search" style="width:auto; padding:8px 12px; font-size:13px;">検索</button>
+      </div>
+    </div>
+
+    <!-- モード切替 -->
+    <div>
+      <div class="section-title">1. 地図タップの動作</div>
+      <div class="tabs">
+        <button data-m="start">出発地</button>
+        <button data-m="goal" class="active">目的地</button>
+        <button data-m="report">水たまり追加/削除</button>
+      </div>
+      <div style="margin-top: 8px; display: flex; gap: 8px;">
+        <button class="btn" id="btn-here" style="flex:1">現在地から報告</button>
+        <button class="btn" id="btn-clear">報告全消去</button>
+      </div>
+    </div>
+
+    <!-- 気象・風 -->
+    <div class="section">
+      <div class="section-title">2. 気象・風の状況</div>
+      <div class="weather-row" style="margin-bottom: 12px;">
+        <div style="font-size: 13px;">雨量: <input id="rain" type="number" min="0" step="0.5" value="0"> mm/h</div>
+        <button class="btn" id="btn-getrain">気象庁取得</button>
+      </div>
+      <div class="weather-row">
+        <div class="wind-info">
+          <div>風速: <b id="w-speed">-</b> m/s</div>
+          <div>風向: <b id="w-dir">-</b></div>
+          <button class="btn" id="btn-getwind" style="margin-top: 6px; padding: 4px 8px;">風を取得</button>
+        </div>
+        <svg id="compass-svg" viewBox="0 0 76 76">
+          <circle cx="38" cy="38" r="35" fill="#fff" stroke="#b6c9dc" stroke-width="2"/>
+          <text x="38" y="14" text-anchor="middle" font-size="10" fill="#65717b" font-weight="bold">北</text>
+          <g id="compass-arrow" style="transform-origin: 38px 38px; transition: transform 0.3s;">
+            <path d="M38 18 L46 38 L41 38 L41 56 L35 56 L35 38 L30 38 Z" fill="#cbd3da" stroke="#fff" stroke-width="1"/>
+          </g>
+        </svg>
+      </div>
+      <button class="btn" id="btn-radar" style="width: 100%; margin-top: 12px;">雨雲レーダー (ナウキャスト) ☁️</button>
+    </div>
+
+    <!-- 検索と結果 -->
+    <div>
+      <div class="section-title">3. ルート検索</div>
+      <button class="btn primary" id="btn-go">回避ルートを検索</button>
+      <div id="results" style="margin-top: 12px; display: none;">
+        <div class="result-row">
+          <span><span class="color-box" style="background:#6b7977;"></span>最短ルート</span>
+          <b id="res-short">-</b>
+        </div>
+        <div class="result-row">
+          <span><span class="color-box" style="background:#1769d2;"></span>回避ルート</span>
+          <b id="res-avoid" style="color: var(--prm);">-</b>
+        </div>
+        <div style="font-size:11px; color:var(--sub); margin-top:4px;">※地図上の道路色は危険度(黄:少, 橙:中, 赤:多)を示します。</div>
+      </div>
+    </div>
+
+    <div id="status">場所を検索するか、タブを切り替えて地図をタップし、出発地・目的地を設定してください。</div>
+  </div>
+</div>
+
+<!-- 報告入力モーダル -->
+<div id="report-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:2000; align-items:center; justify-content:center;">
+  <div style="background:white; padding:20px; border-radius:12px; width:90%; max-width:400px; display:flex; flex-direction:column; gap:12px; box-shadow: 0 10px 25px rgba(0,0,0,0.3);">
+    <h3 style="margin:0; color:var(--text);">💧 水ハネを報告する</h3>
+    
+    <div>
+      <label style="font-size:12px; color:var(--sub); font-weight:bold;">発生日時</label>
+      <input type="datetime-local" id="report-time" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; font-family:inherit; margin-top:4px;">
+    </div>
+
+    <div>
+      <label style="font-size:12px; color:var(--sub); font-weight:bold;">その時の雨量 (mm/h)</label>
+      <div style="display:flex; gap:8px; margin-top:4px;">
+        <input type="number" id="report-rain" min="0" step="0.5" value="0" style="flex:1; padding:8px; border:1px solid var(--border); border-radius:8px; font-family:inherit;">
+        <button class="btn" id="btn-fetch-report-rain" style="margin:0;">気象庁取得</button>
+      </div>
+    </div>
+
+    <div>
+      <label style="font-size:12px; color:var(--sub); font-weight:bold;">感想・状況（口コミ）</label>
+      <textarea id="report-comment" rows="3" placeholder="例: 道路が狭すぎて車から水ハネを受けた！" style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; resize:none; font-family:inherit; margin-top:4px;"></textarea>
+    </div>
+
+    <div>
+      <label style="font-size:12px; color:var(--sub); font-weight:bold;">写真 (任意)</label>
+      <input type="file" id="report-photo" accept="image/*" style="width:100%; font-size:13px; margin-top:4px;">
+      <img id="report-photo-preview" style="display:none; max-width:100%; max-height:200px; margin-top:8px; border-radius:8px; border:1px solid var(--border); object-fit:contain;">
+    </div>
+
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button class="btn" id="btn-cancel-report" style="flex:1;">キャンセル</button>
+      <button class="btn primary" id="btn-submit-report" style="flex:1; padding:8px;">報告する</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+import { getFirestore, doc, collection, onSnapshot, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// GitHub等で直接ホスティングする場合、ここにFirebaseの設定を直接記述できます。
+const fallbackConfig = {
+  // apiKey: "YOUR_API_KEY",
+  // authDomain: "YOUR_AUTH_DOMAIN",
+  // projectId: "YOUR_PROJECT_ID",
+  // ...
+};
+const firebaseConfig = typeof __firebase_config !== 'undefined' && __firebase_config ? JSON.parse(__firebase_config) : fallbackConfig;
+const hasFirebaseConfig = Object.keys(firebaseConfig).length > 0;
+
+let user = null;
+let reportsRef = null;
+
+(async () => {
+  if (!hasFirebaseConfig) {
+    console.log("Firebase config not found. Running in local-only mode.");
+    drawReports();
+    return;
+  }
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  try {
+    if (typeof __initial_auth_token !== 'undefined') {
+      const cred = await signInWithCustomToken(auth, __initial_auth_token);
+      user = cred.user;
+    } else {
+      const cred = await signInAnonymously(auth);
+      user = cred.user;
+    }
+  } catch (e) {
+    console.error("Auth error:", e);
+  }
+
+  if (user) {
+    reportsRef = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+    onSnapshot(reportsRef, (snapshot) => {
+      reports = [];
+      snapshot.forEach((d) => {
+        reports.push({ id: d.id, ...d.data() });
+      });
+      drawReports();
+    }, (error) => {
+      console.error("Firestore snapshot error:", error);
+    });
+  }
+})();
+
+/* =========================================================
+ * 初期設定とマップ
+ * ========================================================= */
+const HALF = 24, SNAP_M = 40, RAD = 25;
+const map = L.map("map", { zoomControl: false }).setView([36.541, 136.658], 15);
+L.control.zoom({ position: "topright" }).addTo(map);
+
+L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {
+  maxZoom: 18,
+  attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+}).addTo(map);
+
+let G = null, start = null, goal = null, mode = "goal";
+let wind = { speed: 0, dir: 0 };
+let reports = []; 
+
+// レイヤー
+const roadLayer = L.layerGroup().addTo(map);
+const routeLayer = L.layerGroup().addTo(map);
+const repLayer = L.layerGroup().addTo(map);
+const pinLayer = L.layerGroup().addTo(map);
+let radarLayer = null;
+
+const $ = id => document.getElementById(id);
+const st = text => { $("status").textContent = text; };
+
+let tempReportLoc = null;
+
+// 時刻を YYYY-MM-DDThh:mm 形式にするヘルパー
+function getLocalDatetimeString(date) {
+  const pad = (n) => n.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/* =========================================================
+ * ユーティリティ (距離計算等)
+ * ========================================================= */
+function dist(p, q) {
+  const dx = (q.lon - p.lon) * 111320 * Math.cos(p.lat * Math.PI / 180);
+  const dy = (q.lat - p.lat) * 110540;
+  return Math.hypot(dx, dy);
+}
+function nearestNode(lat, lon) {
+  let b = null, bd = 1e12;
+  if(!G) return null;
+  for (const [id, n] of G.nodes) {
+    const d = dist({lat, lon}, n);
+    if (d < bd) { bd = d; b = id; }
+  }
+  return b;
+}
+function nearestEdge(lat, lon) {
+  let b = null, bd = 1e12;
+  if(!G || G.grid) return null;
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540;
+  for (const e of G.edges) {
+    const a = G.nodes.get(e.a), c = G.nodes.get(e.b);
+    const ax = (a.lon - lon)*kx, ay = (a.lat - lat)*ky;
+    const cx = (c.lon - lon)*kx, cy = (c.lat - lat)*ky;
+    const dx = cx - ax, dy = cy - ay;
+    let t = -(ax * dx + ay * dy) / (dx * dx + dy * dy || 1);
+    t = Math.max(0, Math.min(1, t));
+    const d = Math.hypot(ax + t * dx, ay + t * dy);
+    if (d < bd) { bd = d; b = e; }
+  }
+  return bd <= SNAP_M ? b : null;
+}
+
+/* =========================================================
+ * 道路データの読み込み (国土地理院ベクトルタイル)
+ * ========================================================= */
+const RD = "https://cyberjapandata.gsi.go.jp/xyz/experimental_rdcl/";
+const Z = 16, VT = "https://cyberjapandata.gsi.go.jp/xyz/optimal_bvmap-v1/";
+function decodeTile(buf) {
+  let p = 0; const layers = {};
+  const vi = () => { let r=0, m=1, b; do { b = buf[p++]; r += (b&127)*m; m*=128; } while(b&128); return r; };
+  const skip = w => { if(w===0) vi(); else if(w===1) p+=8; else if(w===2) p+=vi(); else if(w===5) p+=4; };
+  const msg = (end, fn) => { while(p<end) { const t=vi(); fn(t>>3, t&7); } };
+  msg(buf.length, (f, w) => {
+    if(f===3 && w===2) {
+      const len=vi(), end=p+len, L={name:"", features:[], extent:4096};
+      msg(end, (f2, w2) => {
+        if(f2===1 && w2===2) { const l=vi(); L.name=new TextDecoder().decode(buf.subarray(p, p+l)); p+=l; }
+        else if(f2===2 && w2===2) {
+          const l=vi(), e=p+l, F={type:0, geom:[]};
+          msg(e, (f3, w3) => { if(f3===3 && w3===0) F.type=vi(); else if(f3===4 && w3===2){ const l2=vi(), e2=p+l2; while(p<e2) F.geom.push(vi()); } else skip(w3); });
+          L.features.push(F);
+        }
+        else if(f2===5 && w2===0) L.extent=vi(); else skip(w2);
+      });
+      layers[L.name] = L;
+    } else skip(w);
+  });
+  return layers;
+}
+function featLines(F) {
+  const out = [], g = F.geom; let x=0, y=0, cur=null, i=0;
+  while(i < g.length) {
+    const ci=g[i++], cmd=ci&7, cnt=ci>>3;
+    for(let k=0; k<cnt && cmd!==7; k++) {
+      const dx=g[i++], dy=g[i++]; x += (dx>>>1)^-(dx&1); y += (dy>>>1)^-(dy&1);
+      if(cmd===1){ cur=[]; out.push(cur); } cur.push([x,y]);
+    }
+  }
+  return out;
+}
+const tx2lon = x => x / Math.pow(2, Z) * 360 - 180;
+const ty2lat = y => 180 / Math.PI * Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / Math.pow(2, Z)));
+const lon2tx = l => Math.floor((l + 180) / 360 * Math.pow(2, Z));
+const lat2ty = a => Math.floor((1 - Math.log(Math.tan(a * Math.PI / 180) + 1 / Math.cos(a * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, Z));
+
+async function loadRoads(p, q) {
+  const m = 0.003, S = Math.min(p.lat, q.lat)-m, N = Math.max(p.lat, q.lat)+m;
+  const W = Math.min(p.lon, q.lon)-m*1.2, E = Math.max(p.lon, q.lon)+m*1.2;
+  if (N-S > 0.02 || E-W > 0.025) throw new Error("far");
+  const x0 = lon2tx(W), x1 = lon2tx(E), y0 = lat2ty(N), y1 = lat2ty(S), jobs = [];
+  for(let x=x0; x<=x1; x++) for(let y=y0; y<=y1; y++) jobs.push({x, y});
+  
+  const els = [];
+  await Promise.all(jobs.map(async ({x, y}) => {
+    let lines = null;
+    try {
+      const r = await fetch(`${RD}${Z}/${x}/${y}.geojson`);
+      if(r.ok) {
+        lines = [];
+        for(const f of (await r.json()).features || []) {
+          if(!f.geometry) continue;
+          if(f.geometry.type === "LineString") lines.push(f.geometry.coordinates);
+          else if(f.geometry.type === "MultiLineString") lines.push(...f.geometry.coordinates);
+        }
+      }
+    } catch(e) {}
+    if (!lines) {
+      try {
+        const r = await fetch(`${VT}${Z}/${x}/${y}.pbf`);
+        if(r.ok) {
+          const L = decodeTile(new Uint8Array(await r.arrayBuffer()));
+          lines = [];
+          if(L.road) {
+            for(const F of L.road.features) {
+              if(F.type !== 2) continue;
+              for(const ln of featLines(F)) lines.push(ln.map(([px, py]) => [tx2lon(x + px/L.road.extent), ty2lat(y + py/L.road.extent)]));
+            }
+          }
+        }
+      } catch(e){}
+    }
+    if (lines) {
+      for(const ln of lines) {
+        if(ln.length < 2) continue;
+        const nodes = [], geometry = [];
+        for(const [lon, lat] of ln) {
+          const id = Math.round(lat*2e5) + "," + Math.round(lon*2e5);
+          if(nodes[nodes.length-1] === id) continue;
+          nodes.push(id); geometry.push({lat, lon});
+        }
+        if(nodes.length > 1) els.push({nodes, geometry});
+      }
+    }
+  }));
+  if(!els.length) throw new Error("no_data");
+  
+  // グラフ構築
+  G = { nodes: new Map(), edges: [], adj: new Map() };
+  roadLayer.clearLayers();
+  for (const w of els) {
+    for (let i = 0; i < w.nodes.length; i++) {
+      const id = w.nodes[i];
+      if (!G.nodes.has(id)) { G.nodes.set(id, { lat: w.geometry[i].lat, lon: w.geometry[i].lon }); G.adj.set(id, []); }
+    }
+    for (let i = 1; i < w.nodes.length; i++) {
+      const a = w.nodes[i-1], b = w.nodes[i];
+      const e = { k: a<b ? a+"-"+b : b+"-"+a, a, b, len: dist(G.nodes.get(a), G.nodes.get(b)), r: 0, mid: {lat:(G.nodes.get(a).lat+G.nodes.get(b).lat)/2, lon:(G.nodes.get(a).lon+G.nodes.get(b).lon)/2} };
+      G.edges.push(e); G.adj.get(a).push({to: b, e}); G.adj.get(b).push({to: a, e});
+    }
+  }
+  reports.forEach(r => { const e = nearestEdge(r.lat, r.lon); r.e = e ? e.k : null; });
+}
+
+/* =========================================================
+ * 気象データ取得 (雨量・風・レーダー)
+ * ========================================================= */
+const J_AMEDAS = "https://www.jma.go.jp/bosai/amedas/";
+let amedasTable = null;
+async function fetchRain(lat, lon) {
+  amedasTable = amedasTable || await (await fetch(J_AMEDAS + "const/amedastable.json")).json();
+  const t = (await (await fetch(J_AMEDAS + "data/latest_time.txt")).text()).trim().replace(/[-:T]/g, "").slice(0, 12);
+  const m = await (await fetch(`${J_AMEDAS}data/map/${t}00.json`)).json();
+  let best = null, bd = 1e12;
+  for (const id in m) {
+    const p = m[id].precipitation1h;
+    if (!p || p[0] == null || !amedasTable[id]) continue;
+    const s = amedasTable[id], sl = s.lat[0] + s.lat[1]/60, so = s.lon[0] + s.lon[1]/60;
+    const d = dist({lat, lon}, {lat: sl, lon: so});
+    if (d < bd) { bd = d; best = { rain: p[0], name: s.kjName, km: d/1000 }; }
+  }
+  return best;
+}
+
+$("btn-getrain").onclick = async () => {
+  const c = map.getCenter();
+  st("気象庁アメダスから雨量を取得中...");
+  try {
+    const r = await fetchRain(c.lat, c.lng);
+    if(r) {
+      $("rain").value = r.rain;
+      st(`最寄り観測所「${r.name}」(約${r.km.toFixed(1)}km)の降水量: ${r.rain} mm/h`);
+    } else throw new Error();
+  } catch(e) { st("雨量の取得に失敗しました。手動で入力してください。"); }
+};
+
+$("btn-getwind").onclick = async () => {
+  const c = map.getCenter();
+  st("Open-Meteoから風データを取得中...");
+  try {
+    const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${c.lat}&longitude=${c.lng}&current_weather=true`);
+    const data = await res.json();
+    wind.speed = data.current_weather.windspeed;
+    wind.dir = data.current_weather.winddirection;
+    
+    $("w-speed").textContent = wind.speed;
+    const dirs = ["北","北北東","北東","東北東","東","東南東","南東","南南東","南","南南西","南西","西南西","西","西北西","北西","北北西"];
+    const dName = dirs[Math.round(((wind.dir % 360) + 360) % 360 / 22.5) % 16];
+    $("w-dir").textContent = `${dName} (${wind.dir}°)`;
+    
+    // 風が「吹いていく」方向に矢印を向ける (dirは吹いてくる方向)
+    const arrowDeg = (wind.dir + 180) % 360;
+    $("compass-arrow").style.transform = `rotate(${arrowDeg}deg)`;
+    $("compass-arrow").querySelector("path").setAttribute("fill", wind.speed > 8 ? "#e53935" : wind.speed > 3 ? "#fb8c00" : "#1e88e5");
+    
+    st(`風データを取得しました: ${wind.speed}m/s. ルート検索時に風下への飛散を考慮します。`);
+  } catch(e) { st("風データの取得に失敗しました。"); }
+};
+
+$("btn-radar").onclick = async () => {
+  if (radarLayer) {
+    map.removeLayer(radarLayer); radarLayer = null;
+    $("btn-radar").classList.remove("active-toggle");
+    st("雨雲レーダーをオフにしました。");
+  } else {
+    st("気象庁から雨雲レーダーを取得中...");
+    try {
+      const res = await fetch("https://www.jma.go.jp/bosai/jmatile/data/nowc/targetTimes_N1.json");
+      const times = await res.json();
+      const latest = times[0].basetime, valid = times[0].validtime;
+      radarLayer = L.tileLayer(`https://www.jma.go.jp/bosai/jmatile/data/nowc/${latest}/none/${valid}/surf/hrpns/{z}/{x}/{y}.png`, {
+        maxZoom: 18, opacity: 0.65, attribution: '気象庁 ナウキャスト'
+      }).addTo(map);
+      $("btn-radar").classList.add("active-toggle");
+      st("雨雲レーダーを表示しました。");
+    } catch(e) { st("雨雲レーダーの取得に失敗しました。"); }
+  }
+};
+
+/* =========================================================
+ * 報告・描画管理
+ * ========================================================= */
+function drawReports() {
+  repLayer.clearLayers();
+  for (const r of reports) {
+    const timeStr = new Date(r.t).toLocaleTimeString("ja-JP", {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
+    let tooltipHtml = `<b>報告: 雨量${r.rain}mm/h</b> (${timeStr})<br>`;
+    if (r.comment) tooltipHtml += `<span style="color:#444;">「${r.comment}」</span><br>`;
+    if (r.photo) tooltipHtml += `<img src="${r.photo}" style="max-width:180px; max-height:180px; border-radius:6px; margin:6px 0; object-fit:cover; display:block;"><br>`;
+    tooltipHtml += `<span style="font-size:10px; color:#999;">クリックで削除</span>`;
+
+    L.circleMarker([r.lat, r.lon], { radius: 7, color: "#fff", weight: 2, fillColor: "#1769d2", fillOpacity: 0.9 })
+     .bindTooltip(tooltipHtml, {direction:"top"})
+     .addTo(repLayer)
+     .on("click", async () => {
+        if (reportsRef) {
+          try {
+            await deleteDoc(doc(reportsRef, r.id));
+            st("報告を削除しました。");
+          } catch(e) {
+            st("削除に失敗しました。");
+          }
+        } else {
+          // ローカルモード
+          reports = reports.filter(rep => rep !== r);
+          drawReports();
+          st("報告を削除しました (ローカル)。");
+        }
+     });
+    // 水たまりの影響範囲(円)
+    L.circle([r.lat, r.lon], { radius: RAD, color: "#1769d2", weight: 1, fillColor: "#1769d2", fillOpacity: 0.1, interactive: false }).addTo(repLayer);
+  }
+}
+
+function openReportModal(lat, lon) {
+  tempReportLoc = { lat, lon };
+  $("report-time").value = getLocalDatetimeString(new Date());
+  $("report-rain").value = $("rain").value || 0;
+  $("report-comment").value = "";
+  $("report-photo").value = "";
+  $("report-photo-preview").src = "";
+  $("report-photo-preview").style.display = "none";
+  $("report-modal").style.display = "flex";
+}
+
+$("report-photo").onchange = (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      $("report-photo-preview").src = ev.target.result;
+      $("report-photo-preview").style.display = "block";
+    };
+    reader.readAsDataURL(file);
+  } else {
+    $("report-photo-preview").src = "";
+    $("report-photo-preview").style.display = "none";
+  }
+};
+
+// 画像をアップロード用に圧縮する (最大幅/高さを指定)
+async function compressImage(dataUrl, maxSize = 400) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > maxSize || h > maxSize) {
+        if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+        else { w = Math.round(w * maxSize / h); h = maxSize; }
+      }
+      const cvs = document.createElement("canvas");
+      cvs.width = w; cvs.height = h;
+      cvs.getContext("2d").drawImage(img, 0, 0, w, h);
+      resolve(cvs.toDataURL("image/jpeg", 0.6));
+    };
+    img.src = dataUrl;
+  });
+}
+
+$("btn-fetch-report-rain").onclick = async () => {
+  if (!tempReportLoc) return;
+  const oldText = $("btn-fetch-report-rain").textContent;
+  $("btn-fetch-report-rain").textContent = "取得中...";
+  try {
+    const r = await fetchRain(tempReportLoc.lat, tempReportLoc.lon);
+    if(r) $("report-rain").value = r.rain;
+  } catch(e) {}
+  $("btn-fetch-report-rain").textContent = oldText;
+};
+
+$("btn-cancel-report").onclick = () => {
+  $("report-modal").style.display = "none";
+  tempReportLoc = null;
+};
+
+$("btn-submit-report").onclick = async () => {
+  if (!tempReportLoc) return;
+  
+  $("btn-submit-report").textContent = "送信中...";
+  $("btn-submit-report").disabled = true;
+
+  const rain = +$("report-rain").value || 0;
+  const t = new Date($("report-time").value).getTime() || Date.now();
+  const comment = $("report-comment").value.trim();
+  
+  let photoBase64 = null;
+  const src = $("report-photo-preview").src;
+  if (src && src.startsWith("data:image")) {
+    photoBase64 = await compressImage(src);
+  }
+  
+  const r = { lat: tempReportLoc.lat, lon: tempReportLoc.lon, rain, t, comment };
+  if (photoBase64) r.photo = photoBase64;
+  
+  if (G) { const e = nearestEdge(r.lat, r.lon); r.e = e ? e.k : null; }
+  
+  $("report-modal").style.display = "none";
+  tempReportLoc = null;
+  st("報告を送信しています...");
+  
+  try {
+    if (reportsRef) {
+      await addDoc(reportsRef, r);
+      st(`水ハネ報告を追加しました (クラウド)。タップで削除できます。`);
+    } else {
+      // ローカルモード
+      r.id = "local-" + Date.now();
+      reports.push(r);
+      drawReports();
+      st(`水ハネ報告を追加しました (ローカル)。タップで削除できます。`);
+    }
+  } catch(e) {
+    st("報告の追加に失敗しました。");
+  } finally {
+    $("btn-submit-report").textContent = "報告する";
+    $("btn-submit-report").disabled = false;
+  }
+};
+
+$("btn-here").onclick = () => {
+  if (!navigator.geolocation) { st("位置情報が使えません。地図をタップして報告してください。"); return; }
+  st("位置情報を取得中...");
+  navigator.geolocation.getCurrentPosition(
+    p => { map.setView([p.coords.latitude, p.coords.longitude], 17); openReportModal(p.coords.latitude, p.coords.longitude); },
+    e => { st("位置情報を取得できませんでした。"); }, { enableHighAccuracy: true, timeout: 10000 }
+  );
+};
+$("btn-clear").onclick = async () => { 
+  st("すべての報告を消去中...");
+  try {
+    if (reportsRef) {
+      for (const r of reports) {
+        if (r.id) await deleteDoc(doc(reportsRef, r.id));
+      }
+    } else {
+      reports = [];
+      drawReports();
+    }
+    routeLayer.clearLayers(); 
+    roadLayer.clearLayers(); 
+    $("results").style.display="none"; 
+    st("すべての報告を消去しました。");
+  } catch(e) {
+    st("消去中にエラーが発生しました。");
+  }
+};
+
+/* =========================================================
+ * 地図操作・モード切替・検索
+ * ========================================================= */
+let sP = null, gP = null;
+
+// 場所検索 (OpenStreetMap Nominatim APIに変更)
+$("btn-search").onclick = async () => {
+  const q = $("search-query").value.trim();
+  if (!q) return;
+  
+  const oldText = $("btn-search").textContent;
+  $("btn-search").textContent = "検索中...";
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (data && data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      // 長い住所が返ってくるため、分かりやすく最初のカンマ区切り部分を名前にする
+      const title = data[0].display_name.split(',')[0];
+      
+      map.setView([lat, lon], 16);
+      sP = { lat, lon };
+      
+      pinLayer.clearLayers();
+      L.marker([sP.lat, sP.lon]).bindTooltip("出発", {permanent:true, direction:"top"}).addTo(pinLayer);
+      if (gP) L.marker([gP.lat, gP.lon]).bindTooltip("目的", {permanent:true, direction:"top"}).addTo(pinLayer);
+      
+      st(`「${title}」を出発地に設定しました。目的地をタップしてください。`);
+      document.querySelector('[data-m="goal"]').click(); // 目的地設定モードに自動切替
+    } else {
+      st("場所が見つかりませんでした。別のキーワードでお試しください。");
+    }
+  } catch (e) {
+    st("検索中にエラーが発生しました。");
+  } finally {
+    $("btn-search").textContent = oldText;
+  }
+};
+
+document.querySelectorAll(".tabs button").forEach(b => {
+  b.onclick = () => {
+    mode = b.dataset.m;
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("active", x === b));
+    if(mode === "start") st("地図をタップして【出発地】を設定してください。");
+    else if(mode === "goal") st("地図をタップして【目的地】を設定してください。");
+    else st("地図をタップして水たまり(水ハネ危険箇所)を追加できます。既存のピンをタップで削除。");
+  };
+});
+
+map.on("click", ev => {
+  const { lat, lng } = ev.latlng;
+  if (mode === "report") { openReportModal(lat, lng); return; }
+  
+  if (mode === "start") sP = { lat, lon: lng };
+  else gP = { lat, lon: lng };
+  
+  pinLayer.clearLayers();
+  if (sP) L.marker([sP.lat, sP.lon]).bindTooltip("出発", {permanent:true, direction:"top"}).addTo(pinLayer);
+  if (gP) L.marker([gP.lat, gP.lon]).bindTooltip("目的", {permanent:true, direction:"top"}).addTo(pinLayer);
+  
+  if (mode === "start" && !gP) document.querySelector('[data-m="goal"]').click();
+});
+
+/* =========================================================
+ * リスク計算・ルート探索
+ * ========================================================= */
+function calcRiskAndDraw(rainNow) {
+  const now = Date.now();
+  for (const e of G.edges) e.r = 0;
+  
+  // 風によるシフト計算 (dirは吹いてくる方向、+180で風下へ)
+  const w_rad = (wind.dir + 180) * Math.PI / 180;
+  const shift_m = wind.speed * 1.5; 
+  const dy = (shift_m / 110540) * Math.cos(w_rad);
+  const dx = (shift_m / 111320) * Math.sin(w_rad);
+  const effectRad = RAD + shift_m;
+
+  for (const r of reports) {
+    if (r.rain > rainNow && r.rain > 0) continue; // 雨量が報告時より少ない場合は無視(0の場合は常に考慮)
+    const w = Math.pow(0.5, (now - r.t) / 36e5 / HALF);
+    const shifted = { lat: r.lat + dy, lon: r.lon + dx };
+    for (const e of G.edges) {
+      const d = dist(e.mid, shifted);
+      if (d < effectRad) e.r += w * (1 - d / effectRad);
+    }
+  }
+
+  // 道路の危険度別色分け描画 (水内版リスペクト)
+  roadLayer.clearLayers();
+  for (const e of G.edges) {
+    let col = "#cfdcea", w = 2, op = 0.5;
+    if (e.r > 0) {
+      col = e.r >= 1.0 ? "#e53935" : (e.r >= 0.3 ? "#fb9a1c" : "#f6d84a");
+      w = 4; op = 0.8;
+    }
+    L.polyline([G.nodes.get(e.a), G.nodes.get(e.b)].map(n=>[n.lat, n.lon]), { color: col, weight: w, opacity: op, interactive: false }).addTo(roadLayer);
+  }
+}
+
+function pop(h) {
+  const t=h[0], l=h.pop();
+  if(h.length){ h[0]=l; let i=0; while(true){ let a=2*i+1, b=a+1, m=i; if(a<h.length&&h[a][0]<h[m][0]) m=a; if(b<h.length&&h[b][0]<h[m][0]) m=b; if(m===i) break; [h[m],h[i]]=[h[i],h[m]]; i=m; } }
+  return t;
+}
+function push(h, x) {
+  h.push(x); let i=h.length-1;
+  while(i>0) { const p=(i-1)>>1; if(h[p][0]<=h[i][0]) break; [h[p],h[i]]=[h[i],h[p]]; i=p; }
+}
+
+function dijkstra(wFn) {
+  const d = new Map([[start, 0]]), prev = new Map(), h = [[0, start]];
+  while (h.length) {
+    const [du, u] = pop(h);
+    if (du > (d.get(u) ?? 1e18)) continue;
+    if (u === goal) break;
+    for (const {to, e} of G.adj.get(u)) {
+      const nd = du + wFn(e);
+      if (nd < (d.get(to) ?? 1e18)) { d.set(to, nd); prev.set(to, {from: u, e}); push(h, [nd, to]); }
+    }
+  }
+  if (!prev.has(goal)) return null;
+  const nodes = [goal], edges = []; let c = goal;
+  while (c !== start) { const p = prev.get(c); edges.push(p.e); c = p.from; nodes.push(c); }
+  return { nodes: nodes.reverse(), edges };
+}
+
+$("btn-go").onclick = async () => {
+  if (!sP || !gP) { st("出発地と目的地を指定してください。"); return; }
+  st("道路データを取得しています...");
+  try {
+    await loadRoads(sP, gP);
+  } catch (e) {
+    st("範囲が広すぎるか、道路データが取得できません。距離を近づけてください。"); return;
+  }
+  
+  start = nearestNode(sP.lat, sP.lon);
+  goal = nearestNode(gP.lat, gP.lon);
+  if (!start || !goal) { st("道路が見つかりません。"); return; }
+  
+  st("ルートと危険度を計算中...");
+  const rn = +$("rain").value || 0;
+  
+  calcRiskAndDraw(rn);
+  routeLayer.clearLayers();
+  
+  const ALPHA = 20; // 危険度を避ける重み
+  const sp = dijkstra(e => e.len);
+  const ap = dijkstra(e => e.len * (1 + ALPHA * e.r));
+  
+  if (!sp) { st("経路が見つかりませんでした。"); return; }
+  
+  // 描画
+  L.polyline(sp.nodes.map(id => [G.nodes.get(id).lat, G.nodes.get(id).lon]), { color: "#6b7977", weight: 5, dashArray: "4 6" }).addTo(routeLayer);
+  if(ap) L.polyline(ap.nodes.map(id => [G.nodes.get(id).lat, G.nodes.get(id).lon]), { color: "var(--prm)", weight: 6, opacity: 0.9 }).addTo(routeLayer);
+  
+  // 結果表示
+  const fmt = (dist) => dist >= 1000 ? (dist/1000).toFixed(2) + " km" : Math.round(dist) + " m";
+  const lenSP = sp.edges.reduce((s, e) => s + e.len, 0);
+  $("res-short").textContent = fmt(lenSP);
+  if (ap) {
+    const lenAP = ap.edges.reduce((s, e) => s + e.len, 0);
+    $("res-avoid").textContent = fmt(lenAP) + (lenAP > lenSP ? ` (+${fmt(lenAP - lenSP)})` : "");
+  } else {
+    $("res-avoid").textContent = "計算不能";
+  }
+  
+  $("results").style.display = "block";
+  st("ルート検索が完了しました。地図上の道路色は現在の水ハネ危険度を示しています。");
+};
+
+</script>
+</body>
+</html>
